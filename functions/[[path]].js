@@ -30,12 +30,40 @@ export async function onRequest(context) {
   // POST 요청 처리 - 암호 확인
   if (request.method === 'POST') {
     try {
-      const formData = await request.formData();
-      const password = formData.get('password');
-
-      // 환경 변수가 설정되어 있는지 확인
+      // 환경 변수가 설정되어 있는지 먼저 확인
       if (!env.PASSWORD) {
+        console.error('PASSWORD environment variable is not set');
         return new Response('Server configuration error', { status: 500 });
+      }
+
+      // Content-Type 확인
+      const contentType = request.headers.get('content-type') || '';
+      let password = null;
+
+      if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
+        const formData = await request.formData();
+        password = formData.get('password');
+      } else {
+        // JSON 형식으로 시도
+        try {
+          const body = await request.json();
+          password = body.password;
+        } catch (e) {
+          // 텍스트로 시도
+          const text = await request.text();
+          const params = new URLSearchParams(text);
+          password = params.get('password');
+        }
+      }
+
+      if (!password) {
+        return new Response(
+          generateLoginPage(url.pathname, true, '암호를 입력해주세요'),
+          {
+            status: 400,
+            headers: { 'Content-Type': 'text/html; charset=utf-8' }
+          }
+        );
       }
 
       // 암호 확인
@@ -50,7 +78,7 @@ export async function onRequest(context) {
       } else {
         // 암호 오류
         return new Response(
-          generateLoginPage(url.pathname, true),
+          generateLoginPage(url.pathname, true, '암호가 올바르지 않습니다'),
           {
             status: 401,
             headers: { 'Content-Type': 'text/html; charset=utf-8' }
@@ -58,13 +86,20 @@ export async function onRequest(context) {
         );
       }
     } catch (error) {
-      return new Response('Invalid request', { status: 400 });
+      console.error('Error processing POST request:', error);
+      return new Response(
+        generateLoginPage(url.pathname, true, '요청 처리 중 오류가 발생했습니다'),
+        {
+          status: 400,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        }
+      );
     }
   }
 
   // GET 요청 - 로그인 페이지 표시
   return new Response(
-    generateLoginPage(url.pathname, false),
+    generateLoginPage(url.pathname, false, null),
     {
       status: 200,
       headers: { 'Content-Type': 'text/html; charset=utf-8' }
@@ -75,7 +110,8 @@ export async function onRequest(context) {
 /**
  * 로그인 페이지 HTML 생성
  */
-function generateLoginPage(path, hasError) {
+function generateLoginPage(path, hasError, errorMessage) {
+  const defaultErrorMessage = errorMessage || '암호가 올바르지 않습니다. 다시 시도해주세요.';
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -259,7 +295,7 @@ function generateLoginPage(path, hasError) {
             인증 후 7일간 유효합니다
         </p>
 
-        ${hasError ? '<div class="error-message">❌ 암호가 올바르지 않습니다. 다시 시도해주세요.</div>' : ''}
+        ${hasError ? `<div class="error-message">❌ ${defaultErrorMessage}</div>` : ''}
 
         <form method="POST" action="${path}">
             <div class="input-group">
