@@ -1,115 +1,51 @@
-/**
- * Cloudflare Pages Functions - 암호 보호 미들웨어
- *
- * 이 함수는 모든 HTML 페이지 요청에 대해 암호 인증을 요구합니다.
- * 정적 파일(CSS, JS, 이미지 등)은 인증 없이 통과합니다.
- *
- * 환경 변수 설정 필요:
- * - PASSWORD: 사이트 접근 암호
- */
-
 export async function onRequest(context) {
-  const { request, next, env } = context;
+  const { request, env, next } = context;
   const url = new URL(request.url);
-  const pathname = url.pathname;
 
-  // 정적 파일(확장자가 있고 .html이 아닌 경우) 바로 통과
-  const hasExtension = pathname.includes('.');
-  const isHtml = pathname.endsWith('.html') || pathname === '/' || !hasExtension;
-
-  if (hasExtension && !isHtml) {
+  // 정적 파일은 그냥 통과
+  if (url.pathname.includes('.') && !url.pathname.endsWith('.html')) {
     return next();
   }
 
-  // 쿠키 확인 - 이미 인증된 사용자
+  // 쿠키 확인
   const cookies = request.headers.get('Cookie') || '';
-  if (cookies.includes('siteauth=ok')) {
+  const hasAuth = cookies.includes('siteauth=ok');
+
+  // POST 요청 - 암호 확인
+  let errorMessage = '';
+  if (request.method === 'POST') {
+    try {
+      const formData = await request.formData();
+      const password = formData.get('password');
+
+      // 환경변수 확인
+      if (!env || !env.PASSWORD) {
+        errorMessage = '서버 설정 오류: 환경변수가 설정되지 않았습니다.';
+      } else if (password === env.PASSWORD) {
+        // 원래 요청한 페이지로 리다이렉트 - 쿠키 포함
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'Location': url.origin + '/',
+            'Set-Cookie': 'siteauth=ok; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800'
+          }
+        });
+      } else {
+        errorMessage = '비밀번호가 올바르지 않습니다.';
+      }
+    } catch (e) {
+      errorMessage = '오류가 발생했습니다: ' + e.message;
+    }
+  }
+
+  // 인증된 경우 원래 페이지 보여주기
+  if (hasAuth) {
     return next();
   }
 
-  // POST 요청 처리 - 암호 확인
-  if (request.method === 'POST') {
-    // 환경 변수가 설정되어 있는지 먼저 확인
-    if (!env.PASSWORD) {
-      console.error('PASSWORD environment variable is not set');
-      return new Response('Server configuration error: PASSWORD not set', { status: 500 });
-    }
-
-    let password = null;
-
-    try {
-      // Request를 복제하여 여러 번 읽을 수 있도록 함
-      const clonedRequest = request.clone();
-
-      // formData로 먼저 시도
-      try {
-        const formData = await request.formData();
-        password = formData.get('password');
-      } catch (formError) {
-        console.log('FormData parsing failed, trying text:', formError.message);
-        // formData 실패 시 텍스트로 시도
-        const text = await clonedRequest.text();
-        const params = new URLSearchParams(text);
-        password = params.get('password');
-      }
-    } catch (error) {
-      console.error('Error parsing request:', error);
-      return new Response(
-        generateLoginPage(url.pathname, true, `요청 파싱 오류: ${error.message}`),
-        {
-          status: 400,
-          headers: { 'Content-Type': 'text/html; charset=utf-8' }
-        }
-      );
-    }
-
-    if (!password) {
-      return new Response(
-        generateLoginPage(url.pathname, true, '암호를 입력해주세요'),
-        {
-          status: 400,
-          headers: { 'Content-Type': 'text/html; charset=utf-8' }
-        }
-      );
-    }
-
-    // 암호 확인
-    if (password === env.PASSWORD) {
-      // 인증 성공 - 쿠키 설정 후 리다이렉트
-      const response = Response.redirect(url.toString(), 303);
-      response.headers.set(
-        'Set-Cookie',
-        'siteauth=ok; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800'
-      ); // 7일간 유효
-      return response;
-    } else {
-      // 암호 오류
-      return new Response(
-        generateLoginPage(url.pathname, true, '암호가 올바르지 않습니다'),
-        {
-          status: 401,
-          headers: { 'Content-Type': 'text/html; charset=utf-8' }
-        }
-      );
-    }
-  }
-
-  // GET 요청 - 로그인 페이지 표시
-  return new Response(
-    generateLoginPage(url.pathname, false, null),
-    {
-      status: 200,
-      headers: { 'Content-Type': 'text/html; charset=utf-8' }
-    }
-  );
-}
-
-/**
- * 로그인 페이지 HTML 생성
- */
-function generateLoginPage(path, hasError, errorMessage) {
-  const defaultErrorMessage = errorMessage || '암호가 올바르지 않습니다. 다시 시도해주세요.';
-  return `<!DOCTYPE html>
+  // 인증 안된 경우 로그인 폼 표시
+  return new Response(`
+<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
@@ -189,6 +125,15 @@ function generateLoginPage(path, hasError, errorMessage) {
         .input-group {
             position: relative;
             margin-bottom: 25px;
+            text-align: left;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 10px;
+            color: #555;
+            font-weight: 600;
+            font-size: 14px;
         }
 
         input[type="password"] {
@@ -238,10 +183,11 @@ function generateLoginPage(path, hasError, errorMessage) {
             color: #c33;
             padding: 15px;
             border-radius: 10px;
-            margin-bottom: 20px;
+            margin-top: 20px;
             font-size: 14px;
             border: 1px solid #fcc;
             animation: shake 0.5s;
+            display: ${errorMessage ? 'block' : 'none'};
         }
 
         @keyframes shake {
@@ -292,13 +238,13 @@ function generateLoginPage(path, hasError, errorMessage) {
             인증 후 7일간 유효합니다
         </p>
 
-        ${hasError ? `<div class="error-message">❌ ${defaultErrorMessage}</div>` : ''}
-
-        <form method="POST" action="${path}">
+        <form method="POST">
             <div class="input-group">
+                <label for="password">암호</label>
                 <input
                     type="password"
                     name="password"
+                    id="password"
                     placeholder="암호를 입력하세요"
                     required
                     autofocus
@@ -306,6 +252,7 @@ function generateLoginPage(path, hasError, errorMessage) {
                 >
             </div>
             <button type="submit">🔓 확인</button>
+            ${errorMessage ? `<div class="error-message">❌ ${errorMessage}</div>` : ''}
         </form>
 
         <div class="info-box">
@@ -315,5 +262,8 @@ function generateLoginPage(path, hasError, errorMessage) {
         </div>
     </div>
 </body>
-</html>`;
+</html>
+  `, {
+    headers: { 'Content-Type': 'text/html; charset=utf-8' }
+  });
 }
