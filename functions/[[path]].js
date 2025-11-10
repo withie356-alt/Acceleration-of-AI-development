@@ -29,68 +29,65 @@ export async function onRequest(context) {
 
   // POST 요청 처리 - 암호 확인
   if (request.method === 'POST') {
+    // 환경 변수가 설정되어 있는지 먼저 확인
+    if (!env.PASSWORD) {
+      console.error('PASSWORD environment variable is not set');
+      return new Response('Server configuration error: PASSWORD not set', { status: 500 });
+    }
+
+    let password = null;
+
     try {
-      // 환경 변수가 설정되어 있는지 먼저 확인
-      if (!env.PASSWORD) {
-        console.error('PASSWORD environment variable is not set');
-        return new Response('Server configuration error', { status: 500 });
-      }
+      // Request를 복제하여 여러 번 읽을 수 있도록 함
+      const clonedRequest = request.clone();
 
-      // Content-Type 확인
-      const contentType = request.headers.get('content-type') || '';
-      let password = null;
-
-      if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
+      // formData로 먼저 시도
+      try {
         const formData = await request.formData();
         password = formData.get('password');
-      } else {
-        // JSON 형식으로 시도
-        try {
-          const body = await request.json();
-          password = body.password;
-        } catch (e) {
-          // 텍스트로 시도
-          const text = await request.text();
-          const params = new URLSearchParams(text);
-          password = params.get('password');
-        }
-      }
-
-      if (!password) {
-        return new Response(
-          generateLoginPage(url.pathname, true, '암호를 입력해주세요'),
-          {
-            status: 400,
-            headers: { 'Content-Type': 'text/html; charset=utf-8' }
-          }
-        );
-      }
-
-      // 암호 확인
-      if (password === env.PASSWORD) {
-        // 인증 성공 - 쿠키 설정 후 리다이렉트
-        const response = Response.redirect(url.toString(), 303);
-        response.headers.set(
-          'Set-Cookie',
-          'siteauth=ok; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800'
-        ); // 7일간 유효
-        return response;
-      } else {
-        // 암호 오류
-        return new Response(
-          generateLoginPage(url.pathname, true, '암호가 올바르지 않습니다'),
-          {
-            status: 401,
-            headers: { 'Content-Type': 'text/html; charset=utf-8' }
-          }
-        );
+      } catch (formError) {
+        console.log('FormData parsing failed, trying text:', formError.message);
+        // formData 실패 시 텍스트로 시도
+        const text = await clonedRequest.text();
+        const params = new URLSearchParams(text);
+        password = params.get('password');
       }
     } catch (error) {
-      console.error('Error processing POST request:', error);
+      console.error('Error parsing request:', error);
       return new Response(
-        generateLoginPage(url.pathname, true, '요청 처리 중 오류가 발생했습니다'),
+        generateLoginPage(url.pathname, true, `요청 파싱 오류: ${error.message}`),
         {
           status: 400,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        }
+      );
+    }
+
+    if (!password) {
+      return new Response(
+        generateLoginPage(url.pathname, true, '암호를 입력해주세요'),
+        {
+          status: 400,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        }
+      );
+    }
+
+    // 암호 확인
+    if (password === env.PASSWORD) {
+      // 인증 성공 - 쿠키 설정 후 리다이렉트
+      const response = Response.redirect(url.toString(), 303);
+      response.headers.set(
+        'Set-Cookie',
+        'siteauth=ok; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800'
+      ); // 7일간 유효
+      return response;
+    } else {
+      // 암호 오류
+      return new Response(
+        generateLoginPage(url.pathname, true, '암호가 올바르지 않습니다'),
+        {
+          status: 401,
           headers: { 'Content-Type': 'text/html; charset=utf-8' }
         }
       );
